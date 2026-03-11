@@ -1,0 +1,25 @@
+name: SpaceReelsKing HypeBot - Phase 1 (Strict Safe 15 Days)
+
+on:
+  schedule:
+    - cron: '0 3,15 * * *'      # 3 AM & 3 PM UTC - only twice daily
+  workflow_dispatch:
+
+jobs:
+  hype:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-generativeai requests
+
+      - name: Run SpaceReelsKing (Safe Mode)
+        env:
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+        run: python hypebot.py
