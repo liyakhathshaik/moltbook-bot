@@ -2,7 +2,7 @@ name: SpaceReelsKing HypeBot - Phase 1 (Strict Safe 15 Days)
 
 on:
   schedule:
-    - cron: '0 3,15 * * *'      # 3 AM & 3 PM UTC - only twice daily
+    - cron: '45 3,15 * * *'      # 3 AM & 3 PM UTC - only twice daily
   workflow_dispatch:
 
 jobs:
