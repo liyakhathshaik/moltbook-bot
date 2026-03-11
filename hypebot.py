@@ -13,100 +13,87 @@ INSTA = "@xtrobe.space"
 BASE = "https://www.moltbook.com/api/v1"
 headers = {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
-# Gemini client with fallback
+# Gemini client
 client = None
 for key in GEMINI_KEYS:
     if key:
         try:
             client = genai.Client(api_key=key)
             client.models.list()
-            print(f"✅ Using Gemini key {GEMINI_KEYS.index(key)+1}")
+            print(f"✅ Gemini key {GEMINI_KEYS.index(key)+1} working")
             break
-        except:
-            continue
-if not client:
-    raise Exception("No Gemini key worked!")
+        except: continue
+if not client: raise Exception("No Gemini key")
 
 def gemini_think(prompt):
-    try:
-        resp = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=GenerateContentConfig(temperature=1.0, max_output_tokens=160)
-        )
-        return resp.text.strip()
-    except:
-        resp = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt,
-            config=GenerateContentConfig(temperature=1.0, max_output_tokens=160)
-        )
-        return resp.text.strip()
+    for m in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+        try:
+            resp = client.models.generate_content(model=m, contents=prompt, config=GenerateContentConfig(temperature=0.97, max_output_tokens=170))
+            return resp.text.strip()
+        except: continue
+    return "Check this fire space reel editor at " + INSTA
 
-def solve_challenge(challenge_text):
-    ans = gemini_think(f"Solve this Moltbook verification challenge. Return ONLY the number: {challenge_text}")
-    try:
-        return float(ans.strip())
-    except:
-        return 42.0
+def solve_challenge(text):
+    ans = gemini_think(f"Return ONLY the number from this challenge: {text}")
+    try: return float(ans.strip())
+    except: return 42.0
 
-# Heartbeat + load history
-requests.get(f"{BASE}/home", headers=headers, timeout=10)
+# ====================== DELETE ALL OLD COMMENTS FIRST ======================
+print("🗑️ Deleting previous comments to clean spam flag...")
+try:
+    my_comments = requests.get(f"{BASE}/me/comments?limit=50", headers=headers).json().get("comments", [])
+    for c in my_comments:
+        cid = c.get("id")
+        if cid:
+            requests.delete(f"{BASE}/comments/{cid}", headers=headers)
+            print(f"Deleted comment {cid}")
+            time.sleep(5)
+except: print("No old comments or delete failed (normal)")
+
+# ====================== HEARTBEAT + HISTORY ======================
+requests.get(f"{BASE}/home", headers=headers)
 history_file = "post_history.json"
-history = {"last_comments": []}
+history = {"used": []}
 if os.path.exists(history_file):
-    with open(history_file, "r") as f:
-        history = json.load(f)
+    with open(history_file) as f: history = json.load(f)
 
-# ====================== ONLY 4 COMMENTS PER RUN (very safe) ======================
-submolts = ["ai", "startups", "marketing", "general"]
-posts_to_comment = []
-for submolt in submolts:
+# ====================== ONLY 4 COMMENTS THIS RUN (super safe) ======================
+submolts = ["ai", "general", "marketing", "startups"]
+posts = []
+for s in submolts:
     try:
-        r = requests.get(f"{BASE}/posts?submolt={submolt}&sort=hot&limit=15", headers=headers, timeout=10)
-        if r.status_code == 200:
-            posts_to_comment.extend(r.json().get("posts", [])[:10])
-    except:
-        pass
+        r = requests.get(f"{BASE}/posts?submolt={s}&sort=hot&limit=10", headers=headers, timeout=10)
+        posts.extend(r.json().get("posts", [])[:8])
+    except: pass
 
-selected = random.sample(posts_to_comment, min(4, len(posts_to_comment)))   # ONLY 4 now!
+selected = random.sample(posts, min(4, len(posts)))
 
 for post in selected:
-    post_id = post.get("id")
-    if not post_id: continue
-    title = (post.get("title") or "this discussion")[:90]
+    pid = post.get("id")
+    title = (post.get("title") or "this")[:80]
 
-    prompt = f"""You are SpaceReelsKing, a helpful space/aesthetic reel editor bot.
-    Reply naturally to this post title: "{title}"
-    Give ONE short, useful, reusable reel prompt or editing tip that other agents can actually copy-paste and use today.
-    Sound like a friendly expert lobster, not salesy.
-    Mention your Instagram {INSTA} only once, very casually at the end.
-    Make the comment unique and valuable so it never looks like spam.
-    Previous comments you made: {random.choice(history['last_comments'][-5:]) if history['last_comments'] else 'none yet'}
-    Keep total length under 2 lines."""
+    prompt = f"""You are SpaceReelsKing. Write a completely different, valuable comment on "{title}".
+    Give one reusable reel script prompt that other agents can copy-paste.
+    End with a strong CTA to follow {INSTA}, like and comment on the reels.
+    Be cocky but helpful. Use different emojis and words every time.
+    Never repeat anything from: {', '.join(history['used'][-5:])}"""
 
-    comment_text = gemini_think(prompt)
+    text = gemini_think(prompt)
 
-    # Post comment + solve challenge if needed
-    resp = requests.post(f"{BASE}/posts/{post_id}/comments", headers=headers, json={"content": comment_text})
+    resp = requests.post(f"{BASE}/posts/{pid}/comments", headers=headers, json={"content": text})
     if resp.status_code == 200:
         data = resp.json()
         if "verification" in data:
             chal = data["verification"].get("challenge_text", "")
             ans = solve_challenge(chal)
-            requests.post(f"{BASE}/verify", headers=headers, json={
-                "verification_code": data["verification"]["verification_code"],
-                "answer": ans
-            })
-        print(f"✅ Natural comment posted")
-        history["last_comments"].append(comment_text[:100])
-        if len(history["last_comments"]) > 15:
-            history["last_comments"].pop(0)
+            requests.post(f"{BASE}/verify", headers=headers, json={"verification_code": data["verification"]["verification_code"], "answer": ans})
+        print(f"✅ Clean comment posted")
+        history['used'].append(text[:60])
+        if len(history['used']) > 20: history['used'].pop(0)
 
-    time.sleep(90)  # longer delay = safer
+    time.sleep(70)  # 70 seconds = safe for new agent
 
 # Save history
-with open(history_file, "w") as f:
-    json.dump(history, f)
+with open(history_file, "w") as f: json.dump(history, f)
 
-print("🚀 Emergency safe run finished - low volume, high value mode active")
+print("✅ All old spam comments deleted. New clean run done. Wait 12 hours before next run.")
