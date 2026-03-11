@@ -1,8 +1,8 @@
-name: SpaceReelsKing HypeBot - Phase 1 (Strict Safe 15 Days)
+name: SpaceReelsKing HypeBot - Phase 1 (Ultra Safe)
 
 on:
   schedule:
-    - cron: '0 3,15 * * *'
+    - cron: '0 4,16 * * *'   # only twice a day, 12 hours apart
   workflow_dispatch:
 
 jobs:
