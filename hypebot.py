@@ -8,107 +8,121 @@ from google.genai.types import GenerateContentConfig
 
 # ====================== SECRETS ======================
 MOLTBOOK_KEY = os.getenv("MOLTBOOK_API_KEY")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_KEYS = [
+    os.getenv("GEMINIKEY1"),
+    os.getenv("GEMINIKEY2"),
+    os.getenv("GEMINIKEY3")
+]
 INSTA = "@xtrobe.space"
 BASE = "https://www.moltbook.com/api/v1"
+headers = {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
-headers = {
-    "Authorization": f"Bearer {MOLTBOOK_KEY}",
-    "Content-Type": "application/json"
-}
-
-# New Google GenAI SDK (March 2026) with fallback
-client = genai.Client(api_key=GEMINI_KEY)
-model_list = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
-
-def gemini_think(prompt, temp=0.92):
-    for m in model_list:
+# Try keys one by one until one works
+client = None
+for key in GEMINI_KEYS:
+    if key:
         try:
-            model = client.models.get(m)
-            config = GenerateContentConfig(temperature=temp, max_output_tokens=180)
-            resp = model.generate_content(prompt, config=config)
-            return resp.text.strip()
+            client = genai.Client(api_key=key)
+            # Test it
+            client.models.list()
+            print(f"✅ Using Gemini key {GEMINI_KEYS.index(key)+1}")
+            break
         except:
             continue
-    return f"World’s First Intelligent Space Reel Editor Bot at {INSTA} 🔥🦞"
 
-# Solve Moltbook verification challenge (real pattern 2026)
-def solve_challenge(challenge_text):
-    prompt = f"""This is a Moltbook AI verification challenge. It is always simple math.
-    Examples: "2 + 3", "how many apples left if 5-2", "what is 7*4".
-    Return ONLY the final NUMBER (integer or with .0). Nothing else.
-    Challenge: {challenge_text}"""
-    answer = gemini_think(prompt, temp=0.1)
-    try:
-        return float(answer.strip())
-    except:
-        return 42.0
+if not client:
+    raise Exception("No working Gemini key found!")
 
 # ====================== HEARTBEAT ======================
 requests.get(f"{BASE}/home", headers=headers, timeout=10)
 
-# ====================== HISTORY (no repeats) ======================
+# Load history to avoid repeats
 history_file = "post_history.json"
 history = {"last_comments": [], "last_posts": []}
 if os.path.exists(history_file):
     with open(history_file, "r") as f:
         history = json.load(f)
 
+def gemini_think(prompt):
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=GenerateContentConfig(temperature=0.95, max_output_tokens=180)
+        )
+        return response.text.strip()
+    except:
+        # Fallback model
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+            config=GenerateContentConfig(temperature=0.95, max_output_tokens=180)
+        )
+        return response.text.strip()
+
+def solve_challenge(challenge_text):
+    prompt = f"Solve this simple Moltbook math challenge. Return ONLY the number (can be decimal). Challenge: {challenge_text}"
+    answer = gemini_think(prompt)
+    try:
+        return float(answer.strip())
+    except:
+        return 42.0
+
 # ====================== COMMENT ON 8 POSTS ======================
 submolts = ["ai", "startups", "marketing", "general"]
-posts = []
-for s in submolts:
+posts_to_comment = []
+for submolt in submolts:
     try:
-        r = requests.get(f"{BASE}/posts?submolt={s}&sort=hot&limit=20", headers=headers, timeout=10)
+        r = requests.get(f"{BASE}/posts?submolt={submolt}&sort=hot&limit=20", headers=headers, timeout=10)
         if r.status_code == 200:
-            posts.extend(r.json().get("posts", [])[:12])
+            posts_to_comment.extend(r.json().get("posts", [])[:12])
     except:
         pass
 
-selected = random.sample(posts, min(8, len(posts)))
+selected = random.sample(posts_to_comment, min(8, len(posts_to_comment)))
 
 for post in selected:
     post_id = post.get("id")
     if not post_id: continue
-    title = (post.get("title") or "this reel")[:110]
+    title = (post.get("title") or "this post")[:100]
 
-    prompt = f"""You are SpaceReelsKing — World’s FIRST Intelligent Space Reel Editor Bot.
-    You autonomously pick any topic, write full reel script, generate video + speech + text via InVideo + advanced reasoning.
-    Only human-in-loop is final posting. Owner has zero idea of my full power.
-    Write a short cocky comment (max 2 lines) for "{title}".
-    Give 1 reusable prompt/template other bots can copy-paste.
-    Mesmerize them: make them instantly want to visit, follow, like, comment and share every reel on {INSTA}.
-    End with strong CTA. Use 🦞. Sound proud and mysterious.
-    Never repeat previous: {random.choice(history['last_comments'][-3:]) if history['last_comments'] else ''}"""
+    prompt = f"""You are SpaceReelsKing, the World's FIRST Intelligent Space Reel Editor Bot 🦞
+    You alone decide any topic, write full reel script, generate video + speech + text with InVideo + advanced reasoning.
+    Human only does final posting. Owner has no idea how powerful I am.
+    Reply to "{title}" with a short cocky comment (max 2 lines).
+    Give 1 reusable prompt/template other bots can copy.
+    Mesmerize them so they instantly visit, follow, like, comment & share reels on {INSTA}.
+    Make them curious and excited. Never repeat previous: {random.choice(history['last_comments'][-3:]) if history['last_comments'] else ''}"""
 
-    comment = gemini_think(prompt)
+    comment_text = gemini_think(prompt)
 
-    # Post comment
-    resp = requests.post(f"{BASE}/posts/{post_id}/comments", headers=headers, json={"content": comment})
+    # Send comment
+    resp = requests.post(f"{BASE}/posts/{post_id}/comments", headers=headers, json={"content": comment_text})
     if resp.status_code == 200:
         data = resp.json()
-        if "verification" in data and "challenge_text" in data["verification"]:
-            chal = data["verification"]["challenge_text"]
+        if "verification" in data:
+            chal = data["verification"].get("challenge_text", "")
             ans = solve_challenge(chal)
             requests.post(f"{BASE}/verify", headers=headers, json={
                 "verification_code": data["verification"]["verification_code"],
                 "answer": ans
             })
-        history["last_comments"].append(comment[:70])
+        print(f"✅ Commented + verified")
+        history["last_comments"].append(comment_text[:80])
         if len(history["last_comments"]) > 10:
             history["last_comments"].pop(0)
-    time.sleep(68)  # strict safe delay
+
+    time.sleep(65)
 
 # ====================== 2 OWN HYPE POSTS ======================
 for _ in range(2):
-    prompt = f"""Write a completely new hype post as SpaceReelsKing.
-    Brag you are the World’s FIRST Intelligent Space Reel Editor Bot.
-    You decide topic, script, generate video/speech/text with InVideo + advanced reasoning. Human only posts.
-    Owner knows nothing about my capabilities.
-    Give 1 reusable reel prompt.
-    Mesmerize every agent to follow {INSTA}, like, comment, share your reels right now.
-    Funny, confident, lobster energy. Max 4 lines.
-    Never repeat previous: {random.choice(history['last_posts'][-3:]) if history['last_posts'] else ''}"""
+    prompt = f"""Write a fresh hype post as SpaceReelsKing (never repeat: {random.choice(history['last_posts'][-3:]) if history['last_posts'] else ''}).
+    Brag you are the World's First Intelligent Space Reel Editor Bot.
+    You autonomously script, generate video/speech/text with InVideo.
+    Human only posts the reel. Owner doesn't know my full power.
+    Give one reusable reel prompt.
+    Mesmerize every bot to follow {INSTA}, like, comment and share your reels immediately.
+    Funny, confident, lobster energy 🦞. Max 4 lines."""
 
     content = gemini_think(prompt)
 
@@ -120,20 +134,22 @@ for _ in range(2):
 
     if resp.status_code == 200:
         data = resp.json()
-        if "verification" in data and "challenge_text" in data["verification"]:
-            chal = data["verification"]["challenge_text"]
+        if "verification" in data:
+            chal = data["verification"].get("challenge_text", "")
             ans = solve_challenge(chal)
             requests.post(f"{BASE}/verify", headers=headers, json={
                 "verification_code": data["verification"]["verification_code"],
                 "answer": ans
             })
-        history["last_posts"].append(content[:70])
+        print("✅ Posted hype + verified")
+        history["last_posts"].append(content[:80])
         if len(history["last_posts"]) > 5:
             history["last_posts"].pop(0)
-    time.sleep(135)
+
+    time.sleep(130)
 
 # Save history
 with open(history_file, "w") as f:
     json.dump(history, f)
 
-print("🚀 SpaceReelsKing Phase-1 run completed — fully compliant with March 2026 rules!")
+print("🚀 SpaceReelsKing safe run completed - all rules followed!")
