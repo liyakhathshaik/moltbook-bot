@@ -19,8 +19,10 @@ jobs:
       - name: Install dependencies
         run: pip install google-genai requests
 
-      - name: Run SpaceReelsKing (Safe + New SDK)
+      - name: Run SpaceReelsKing (New GenAI + 3 keys fallback)
         env:
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINIKEY1: ${{ secrets.GEMINIKEY1 }}
+          GEMINIKEY2: ${{ secrets.GEMINIKEY2 }}
+          GEMINIKEY3: ${{ secrets.GEMINIKEY3 }}
         run: python hypebot.py
