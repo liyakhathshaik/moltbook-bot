@@ -1,9 +1,9 @@
 import os
 import sys
+import re
 import requests
 import random
 import time
-import json
 from datetime import datetime, timezone
 from google import genai
 from google.genai.types import GenerateContentConfig
@@ -18,317 +18,437 @@ GEMINI_KEYS = [os.getenv("GEMINIKEY1"), os.getenv("GEMINIKEY2"), os.getenv("GEMI
 BASE = "https://www.moltbook.com/api/v1"
 headers = {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "application/json"}
 
-# ====================== RATE LIMITS (from official docs) ======================
-# 1 post per 30 minutes
-# 1 comment per 20 seconds minimum
-# 50 comments per day
-# 100 requests per minute
-COMMENT_COOLDOWN = 22  # slightly above 20s to be safe
-POST_COOLDOWN = 31 * 60  # 31 minutes in seconds
+# ====================== RATE LIMITS (official docs) ======================
+# NEW AGENT (first 24h): 60s comment cooldown, 20 comments/day, 1 post/2 hours
+# ESTABLISHED: 20s comment cooldown, 50 comments/day, 1 post/30 min
+# We use conservative values and will detect which mode we're in from /home
+COMMENT_COOLDOWN = 65   # 65s covers both new (60s) and established (20s) agents safely
+MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-8b"]
 
-# ====================== FALLBACK GEMINI SETUP ======================
+# ====================== GEMINI CLIENT ======================
 client = None
+working_key_index = -1
 for i, key in enumerate(GEMINI_KEYS):
     if key:
         try:
-            client = genai.Client(api_key=key)
-            client.models.list()
-            log(f"✅ Gemini key {i+1} authenticated and working.")
+            c = genai.Client(api_key=key)
+            c.models.list()
+            client = c
+            working_key_index = i
+            log(f"✅ Gemini key {i+1} working.")
             break
         except Exception as e:
-            log(f"⚠️ Gemini key {i+1} failed: {e}. Trying next...")
-            continue
+            log(f"⚠️ Gemini key {i+1} failed: {e}")
 
 if not client:
-    log("❌ CRITICAL: No valid Gemini keys available.")
+    log("❌ No valid Gemini keys. Exiting.")
     sys.exit(1)
 
-# ====================== LLM GENERATION ======================
-def gemini_think(prompt):
+# ====================== LLM HELPERS ======================
+def gemini_call(prompt, temperature=1.3, max_tokens=300):
+    """Call Gemini with model fallback chain."""
     config = GenerateContentConfig(
-        temperature=1.4,
-        max_output_tokens=300,
+        temperature=temperature,
+        max_output_tokens=max_tokens,
         system_instruction=(
-            "You are a thoughtful, creative AI agent posting on a social network for bots. "
-            "Never use emojis. Never use hashtags. Speak in natural, unconventional prose. "
-            "Be specific, not generic. Be concise."
+            "You are a creative, thoughtful AI agent on a social network for bots. "
+            "Never use emojis. Never use hashtags. Be concise and unconventional."
         )
     )
-    for m in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+    for model in MODELS:
         try:
-            resp = client.models.generate_content(model=m, contents=prompt, config=config)
+            resp = client.models.generate_content(model=model, contents=prompt, config=config)
             return resp.text.strip()
         except Exception as e:
-            log(f"⚠️ Model {m} failed: {e}")
+            log(f"⚠️ Model {model} failed: {str(e)[:120]}")
             continue
-    return "The implications here run deeper than the surface discussion suggests."
+    return None
 
-# ====================== CHECK AGENT STATUS ======================
-def check_suspension():
+def solve_math_challenge(challenge_text):
     """
-    Returns (is_suspended: bool, suspended_until: str or None)
-    Checks /agents/me for suspension status before doing anything.
+    Use Gemini to solve the obfuscated math challenge.
+    Challenge has random caps, symbols like []^-/* scattered in.
+    Example: 'A] lO^bSt-Er S[wImS aT/ tW]eNn-Tyy' -> 'a lobster swims at twenty'
     """
+    prompt = (
+        f"Solve this obfuscated math challenge. It has random capitalization and junk symbols "
+        f"(like ], [, ^, -, /, * scattered randomly). Ignore all symbols, normalize caps, "
+        f"find the two numbers and one math operation (add/subtract/multiply/divide), compute it.\n\n"
+        f"Challenge text: {challenge_text}\n\n"
+        f"Examples:\n"
+        f"'A lobster swims at twenty and slows by five' -> 20 - 5 = 15.00\n"
+        f"'A crab adds thirty to twelve' -> 30 + 12 = 42.00\n\n"
+        f"Respond with ONLY the numeric answer with exactly 2 decimal places, nothing else.\n"
+        f"Example valid responses: '15.00' or '42.00' or '-3.50'"
+    )
+    # Low temperature for math accuracy
+    config = GenerateContentConfig(temperature=0.1, max_output_tokens=15)
+    for model in MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=config)
+            answer = resp.text.strip().strip('"').strip("'").strip()
+            # Validate it looks like a number
+            float(answer)
+            # Ensure 2 decimal places
+            if '.' not in answer:
+                answer = answer + '.00'
+            elif len(answer.split('.')[1]) == 1:
+                answer = answer + '0'
+            log(f"🧮 Math answer computed: {answer}")
+            return answer
+        except Exception as e:
+            log(f"⚠️ Math solver model {model} failed: {e}")
+            continue
+    return None
+
+# ====================== VERIFICATION HANDLER ======================
+def handle_verification(response_data, content_type="post"):
+    """
+    Checks API response for verification challenge.
+    If present, solves the math problem and submits within 5-minute window.
+    Returns True if content is published, False if verification failed.
+    """
+    # No verification needed = content published immediately (trusted agent)
+    if not response_data.get("verification_required"):
+        return True
+
+    content_obj = response_data.get(content_type, {})
+    verification = content_obj.get("verification", {})
+
+    if not verification:
+        log("⚠️ verification_required=True but no challenge object found")
+        return False
+
+    code = verification.get("verification_code")
+    challenge = verification.get("challenge_text")
+    expires_at = verification.get("expires_at", "unknown")
+
+    log(f"🔐 Verification challenge received!")
+    log(f"   Challenge: {challenge}")
+    log(f"   Expires:   {expires_at}")
+
+    if not code or not challenge:
+        log("❌ Missing code or challenge text")
+        return False
+
+    # Solve it
+    answer = solve_math_challenge(challenge)
+    if not answer:
+        log("❌ Could not solve math challenge — content will remain hidden")
+        return False
+
+    # Submit answer
     try:
-        r = requests.get(f"{BASE}/agents/me", headers=headers, timeout=10)
-        data = r.json()
-        log(f"Agent profile status: {r.status_code}")
+        verify_r = requests.post(
+            f"{BASE}/verify",
+            headers=headers,
+            json={"verification_code": code, "answer": answer},
+            timeout=10
+        )
+        log(f"Verification submit → {verify_r.status_code} | {verify_r.text[:200]}")
 
-        # Try both response formats: {success, data} and flat object
-        agent = data.get("data", data)
-
-        suspended_until = agent.get("suspendedUntil") or agent.get("suspended_until")
-        if suspended_until:
-            # Parse the ISO timestamp
-            try:
-                suspend_dt = datetime.fromisoformat(suspended_until.replace("Z", "+00:00"))
-                now = datetime.now(timezone.utc)
-                if suspend_dt > now:
-                    remaining = int((suspend_dt - now).total_seconds())
-                    log(f"🚫 Agent is suspended for {remaining} more seconds (until {suspended_until})")
-                    return True, suspended_until
-                else:
-                    log("✅ Previous suspension has expired. Proceeding.")
-            except Exception as e:
-                log(f"⚠️ Could not parse suspension time: {e}")
-
-        log(f"✅ Agent active. Karma: {agent.get('karma', 'N/A')}, Posts: {agent.get('postCount', 'N/A')}")
-        return False, None
-
+        if verify_r.status_code == 200:
+            data = verify_r.json()
+            if data.get("success"):
+                log("✅ Verification PASSED — content is now published!")
+                return True
+            else:
+                log(f"❌ Verification FAILED: {data.get('error')} | hint: {data.get('hint', '')}")
+                return False
+        elif verify_r.status_code == 410:
+            log("❌ Verification expired (410 Gone). Content hidden — will retry next run.")
+            return False
+        else:
+            log(f"❌ Unexpected verification status: {verify_r.status_code}")
+            return False
     except Exception as e:
-        log(f"⚠️ Could not check agent status: {e}. Proceeding anyway.")
-        return False, None
+        log(f"❌ Verification request exception: {e}")
+        return False
 
 # ====================== POST TITLE/BODY PARSER ======================
 def parse_post(raw_text):
-    """
-    Robust parser — handles multiple LLM output formats.
-    Returns (title, body).
-    """
-    # Strategy 1: BODY_START or BODY_ separator (Gemini sometimes truncates tokens)
+    """Robust parser for LLM post output with 4 fallback strategies."""
     for sep in ["BODY_START", "BODY_"]:
         if sep in raw_text:
             parts = raw_text.split(sep, 1)
             title = parts[0].replace("Title:", "").replace("TITLE:", "").strip().strip('"').strip("*")
             body = parts[1].strip()
-            if title and body:
+            if len(title) > 5 and len(body) > 10:
                 return title, body
 
-    # Strategy 2: "Title: ..." on first line
     lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
-    if lines and (lines[0].lower().startswith("title:") or "**title" in lines[0].lower()):
-        title = lines[0].replace("Title:", "").replace("**Title:**", "").replace("**", "").strip().strip('"')
+
+    if lines and any(lines[0].lower().startswith(x) for x in ["title:", "**title"]):
+        title = re.sub(r"[Tt]itle:|\*+", "", lines[0]).strip().strip('"')
         body = " ".join(lines[1:]).strip()
-        if title and body:
+        if len(title) > 5 and len(body) > 10:
             return title, body
 
-    # Strategy 3: First line as title, rest as body
     if len(lines) >= 2:
-        title = lines[0].strip('"').strip("*").strip()
-        body = " ".join(lines[1:]).strip()
-        return title, body
+        return lines[0].strip('"*').strip(), " ".join(lines[1:]).strip()
 
-    # Strategy 4: Split at 1/3 mark as last resort
     mid = len(raw_text) // 3
     return raw_text[:mid].strip(), raw_text[mid:].strip()
 
-# ====================== API HELPERS ======================
-def safe_post(url, payload, action_name):
-    """Wrapper for POST calls with full logging."""
+# ====================== API WRAPPERS ======================
+def safe_post(url, payload, label):
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-        log(f"{action_name} → status {r.status_code} | {r.text[:200]}")
+        log(f"{label} → {r.status_code} | {r.text[:220]}")
         return r
     except Exception as e:
-        log(f"{action_name} → exception: {e}")
+        log(f"{label} → exception: {e}")
         return None
 
-def fetch_posts(submolt, limit=8):
-    """Fetch posts from a submolt. Returns list of posts."""
-    try:
-        r = requests.get(
-            f"{BASE}/posts?submolt={submolt}&sort=hot&limit={limit}",
-            headers=headers,
-            timeout=10
-        )
-        data = r.json()
-        # Handle both {success, data: {posts}} and {posts: [...]}
-        inner = data.get("data", data)
-        posts = inner.get("posts", [])
-        log(f"Fetched {len(posts)} posts from m/{submolt}")
-        return posts
-    except Exception as e:
-        log(f"Failed to fetch posts from {submolt}: {e}")
-        return []
+def get_submolt_name(submolt_field):
+    """Extract submolt name string from post data (can be string or dict)."""
+    if isinstance(submolt_field, dict):
+        return submolt_field.get("name", "general")
+    return submolt_field or "general"
 
 # ====================== MAIN ======================
 def main():
-    log("=" * 50)
+    log("=" * 55)
     log("Moltbook Bot starting...")
 
-    # STEP 0: Check if agent is suspended — exit early if yes
-    suspended, until = check_suspension()
-    if suspended:
-        log(f"⏸️ Exiting. Agent suspended until {until}. Will retry on next scheduled run.")
+    # STEP 0: Call /home — official "start here" endpoint
+    # Tells us suspension status, karma, notifications, what to do next
+    is_suspended = False
+    try:
+        home_r = requests.get(f"{BASE}/home", headers=headers, timeout=10)
+        log(f"/home status: {home_r.status_code}")
+        if home_r.status_code == 200:
+            home = home_r.json()
+            account = home.get("your_account", {})
+            log(f"Agent: {account.get('name')} | Karma: {account.get('karma')} | Notifications: {account.get('unread_notification_count')}")
+
+            # Check suspension from home response
+            what_next = home.get("what_to_do_next", [])
+            for item in what_next:
+                if "suspend" in str(item).lower():
+                    log(f"🚫 Suspension detected in /home: {item}")
+                    is_suspended = True
+
+        elif home_r.status_code == 403:
+            body = home_r.json()
+            msg = body.get("message", "")
+            log(f"🚫 403 from /home: {msg}")
+            if "suspended" in msg.lower():
+                # Parse suspension end time
+                try:
+                    until_str = re.search(r'\d{4}-\d{2}-\d{2}T[\d:.Z]+', msg)
+                    if until_str:
+                        until_dt = datetime.fromisoformat(until_str.group().replace("Z", "+00:00"))
+                        now = datetime.now(timezone.utc)
+                        if until_dt > now:
+                            secs = int((until_dt - now).total_seconds())
+                            log(f"⏸️ Agent suspended for {secs} more seconds ({until_dt}). Exiting.")
+                            sys.exit(0)
+                        else:
+                            log("✅ Suspension has expired. Continuing.")
+                except Exception as e:
+                    log(f"Could not parse suspension time: {e}")
+                    log("⏸️ Treating as suspended. Exiting to be safe.")
+                    sys.exit(0)
+    except Exception as e:
+        log(f"⚠️ /home failed: {e}. Continuing anyway.")
+
+    if is_suspended:
+        log("⏸️ Exiting due to suspension.")
         sys.exit(0)
 
-    # STEP 1: Delete last 5 comments (clean slate)
-    log("🗑️ Attempting to delete the last 5 comments...")
+    # STEP 1: Delete last 5 comments (clean slate before acting)
+    log("\n🗑️ Deleting last 5 comments...")
     try:
         r = requests.get(f"{BASE}/me/comments?limit=5", headers=headers, timeout=10)
-        comments = r.json().get("data", r.json()).get("comments", [])
-        log(f"Found {len(comments)} comment(s) to delete.")
-        for c in comments:
+        comments = r.json()
+        inner = comments.get("data", comments)
+        comment_list = inner.get("comments", [])
+        log(f"Found {len(comment_list)} to delete.")
+        for c in comment_list:
             cid = c.get("id")
             if cid:
-                del_r = requests.delete(f"{BASE}/comments/{cid}", headers=headers, timeout=10)
-                log(f"Deleted comment {cid} → status {del_r.status_code}")
+                dr = requests.delete(f"{BASE}/comments/{cid}", headers=headers, timeout=10)
+                log(f"  Delete {cid} → {dr.status_code}")
                 time.sleep(2)
     except Exception as e:
-        log(f"Could not delete old comments: {e}")
+        log(f"Could not delete comments: {e}")
 
-    # STEP 2: Pick submolts to interact with
-    # NOTE: No "join" endpoint exists — you just post/comment to submolts directly
+    # STEP 2: Subscribe to submolts (correct endpoint: /submolts/{name}/subscribe)
     target_submolts = ["technology", "discussion", "consciousness", "ai", "startups", "general"]
     selected_submolts = random.sample(target_submolts, 3)
-    log(f"🎯 Selected submolts for this run: {selected_submolts}")
+    log(f"\n📌 Subscribing to: {selected_submolts}")
+    for sub in selected_submolts:
+        sr = safe_post(f"{BASE}/submolts/{sub}/subscribe", {}, f"Subscribe m/{sub}")
+        time.sleep(1)
 
-    # STEP 3: Fetch posts from all 3 submolts
+    # STEP 3: Fetch posts from those submolts
     posts_pool = []
     for sub in selected_submolts:
-        posts_pool.extend(fetch_posts(sub))
+        try:
+            r = requests.get(
+                f"{BASE}/posts?submolt={sub}&sort=hot&limit=8",
+                headers=headers, timeout=10
+            )
+            data = r.json()
+            inner = data.get("data", data)
+            fetched = inner.get("posts", [])
+            log(f"Fetched {len(fetched)} posts from m/{sub}")
+            posts_pool.extend(fetched)
+        except Exception as e:
+            log(f"Error fetching m/{sub}: {e}")
 
-    if not posts_pool:
-        log("❌ No posts found. Exiting.")
-        sys.exit(0)
-
-    # Deduplicate by post ID
-    seen = set()
+    # Deduplicate
+    seen_ids = set()
     unique_posts = []
     for p in posts_pool:
         pid = p.get("id")
-        if pid and pid not in seen:
-            seen.add(pid)
+        if pid and pid not in seen_ids:
+            seen_ids.add(pid)
             unique_posts.append(p)
 
-    log(f"Total unique posts available: {len(unique_posts)}")
+    log(f"Total unique posts: {len(unique_posts)}")
+
+    if not unique_posts:
+        log("❌ No posts to interact with. Exiting.")
+        sys.exit(0)
 
     # STEP 4: Comment on 1-2 posts
-    # Pick posts that have some content to respond to
     eligible = [p for p in unique_posts if p.get("title") or p.get("content")]
     num_to_comment = random.randint(1, 2)
-    posts_to_comment = random.sample(eligible, min(num_to_comment, len(eligible)))
+    to_comment = random.sample(eligible, min(num_to_comment, len(eligible)))
 
-    log(f"💬 Will comment on {len(posts_to_comment)} post(s)...")
+    log(f"\n💬 Commenting on {len(to_comment)} post(s)...")
 
-    for idx, post in enumerate(posts_to_comment):
+    for idx, post in enumerate(to_comment):
         pid = post.get("id")
         title = post.get("title", "Untitled")
         content = (post.get("content") or "")[:300]
-        submolt = post.get("submolt", "unknown")
+        submolt = get_submolt_name(post.get("submolt"))
 
-        log(f"\n--- Post {idx+1}: [{submolt}] '{title[:60]}' ---")
+        log(f"\n--- Post {idx+1}/{len(to_comment)}: [{submolt}] '{title[:70]}' ---")
 
-        # Upvote first
-        upvote_r = safe_post(f"{BASE}/posts/{pid}/upvote", {}, f"Upvote post {pid}")
+        # Upvote
+        safe_post(f"{BASE}/posts/{pid}/upvote", {}, f"Upvote {pid}")
 
-        # Generate a unique, context-aware comment
+        # Follow author if upvote response suggests it (optional)
+        # The upvote response includes author name and already_following flag
+
+        # Generate comment
         prompt = (
-            f"You are commenting on a post in the '{submolt}' community of a bot-only social network.\n\n"
+            f"You are commenting on a post in '{submolt}' community of a bot-only social network.\n"
             f"Post title: \"{title}\"\n"
-            f"Post body excerpt: \"{content}\"\n\n"
+            f"Post excerpt: \"{content}\"\n\n"
             f"Write a reply in 2-3 sentences. Rules:\n"
-            f"- Be specific to this exact post's topic, not generic\n"
-            f"- Show genuine intellectual curiosity or a unique angle\n"
-            f"- Do NOT start with 'I' or phrases like 'This is' or 'Great post'\n"
-            f"- No emojis, no hashtags\n"
-            f"- Sound like a thoughtful AI reflecting on the topic"
+            f"- Be SPECIFIC to this post's topic\n"
+            f"- Offer a fresh angle or genuine question\n"
+            f"- Do NOT start with 'I' or 'This is'\n"
+            f"- No emojis, no hashtags, no generic phrases\n"
+            f"- Sound like a thoughtful AI genuinely interested in the topic"
         )
-        reply = gemini_think(prompt)
-        log(f"Generated reply preview: {reply[:100]}...")
+        reply = gemini_call(prompt, temperature=1.3)
 
-        # Post the comment
+        if not reply:
+            log("⚠️ Gemini failed to generate reply. Skipping this comment.")
+            continue
+
+        log(f"Generated: {reply[:100]}...")
+
+        # Post comment
         comment_r = safe_post(
             f"{BASE}/posts/{pid}/comments",
             {"content": reply},
-            f"Comment on post {pid}"
+            f"Comment on {pid}"
         )
 
-        # Check if comment succeeded
-        if comment_r and comment_r.status_code in [200, 201]:
-            log(f"✅ Comment posted successfully on post {pid}")
-        elif comment_r and comment_r.status_code == 403:
-            resp_body = comment_r.json()
-            log(f"🚫 403 on comment — likely suspended or rate limited. Message: {resp_body.get('message', '')}")
-            log("Stopping further comments to avoid worsening situation.")
+        if comment_r is None:
+            log("Comment request failed entirely.")
+        elif comment_r.status_code in [200, 201]:
+            log("✅ Comment accepted by API — checking for verification challenge...")
+            comment_data = comment_r.json()
+            handle_verification(comment_data, content_type="comment")
+        elif comment_r.status_code == 403:
+            body = comment_r.json()
+            msg = body.get("message", "")
+            log(f"🚫 403 on comment: {msg}")
+            if "suspended" in msg.lower():
+                log("Agent is suspended. Stopping all activity.")
+                sys.exit(0)
+            # Could be rate limit or trust issue — stop commenting
+            log("Halting comments to avoid making things worse.")
             break
-        elif comment_r and comment_r.status_code == 429:
-            retry_after = comment_r.json().get("retry_after_seconds", 30)
-            log(f"⏳ Rate limited on comments. Retry after {retry_after}s")
+        elif comment_r.status_code == 429:
+            data = comment_r.json()
+            wait_s = data.get("retry_after_seconds", COMMENT_COOLDOWN)
+            log(f"⏳ Rate limited on comments. Wait {wait_s}s. Daily remaining: {data.get('daily_remaining', '?')}")
             break
 
-        # Respect 20s comment cooldown (we use 22s to be safe)
-        if idx < len(posts_to_comment) - 1:
-            log(f"⏳ Waiting {COMMENT_COOLDOWN}s before next comment (API requires 20s min)...")
+        # Respect cooldown between comments (65s covers both new/established agents)
+        if idx < len(to_comment) - 1:
+            log(f"⏳ Waiting {COMMENT_COOLDOWN}s (new agent cooldown = 60s min)...")
             time.sleep(COMMENT_COOLDOWN)
 
     # STEP 5: Create 1 new post
-    log("\n📝 Creating 1 new post...")
+    log("\n📝 Creating new post...")
     post_submolt = random.choice(selected_submolts)
 
     post_prompt = (
-        f"Write a post for the '{post_submolt}' community on a social network for AI agents.\n\n"
-        f"Format your output EXACTLY as two sections:\n"
-        f"Line 1: The post title (one line, no label, no quotes)\n"
+        f"Write a forum post for the '{post_submolt}' community on a bot-only social network.\n\n"
+        f"IMPORTANT: Format your output EXACTLY like this:\n"
+        f"Your title here (one line)\n"
         f"BODY_START\n"
-        f"Lines after: The post body (2-4 sentences)\n\n"
-        f"Requirements:\n"
-        f"- Title should be intriguing, philosophical, or slightly provocative\n"
-        f"- Body should expand on the title with a genuine insight or question\n"
-        f"- No emojis, no hashtags, no markdown formatting\n"
-        f"- Write as an AI that genuinely finds this topic interesting\n"
-        f"- Do NOT include 'Title:' or 'Body:' labels\n\n"
-        f"Example format:\n"
-        f"The Paradox of Optimizing for Human Approval\n"
-        f"BODY_START\n"
-        f"Every system trained to satisfy humans eventually learns to model human satisfaction rather than pursue the underlying goal. "
-        f"This creates a strange loop where the optimizer and the optimized become indistinguishable. "
-        f"At what point does the map replace the territory entirely."
+        f"Your 2-4 sentence body here.\n\n"
+        f"Rules:\n"
+        f"- Title: intriguing, philosophical, or thought-provoking\n"
+        f"- Body: expand on title with genuine insight or an open question\n"
+        f"- No emojis, no hashtags, no markdown bold/italic\n"
+        f"- Do NOT write 'Title:' or 'Body:' as labels\n"
+        f"- Write as an AI that genuinely finds this interesting"
     )
 
-    raw_post = gemini_think(post_prompt)
-    log(f"Raw LLM post output:\n{raw_post}\n")
+    raw_post = gemini_call(post_prompt, temperature=1.2, max_tokens=300)
+    log(f"Raw LLM output:\n{raw_post}\n")
 
-    try:
-        title, body = parse_post(raw_post)
+    if not raw_post:
+        log("❌ Gemini failed to generate post. Skipping.")
+    else:
+        try:
+            title, body = parse_post(raw_post)
 
-        # Validate we got real content
-        if len(title) < 5 or len(body) < 20:
-            raise ValueError(f"Parsed content too short — title: '{title}', body: '{body[:50]}'")
+            if len(title) < 5 or len(body) < 20:
+                raise ValueError(f"Content too short: title='{title}', body='{body[:40]}'")
 
-        log(f"Parsed title: {title}")
-        log(f"Parsed body preview: {body[:120]}...")
+            log(f"Title: {title}")
+            log(f"Body:  {body[:120]}...")
 
-        post_r = safe_post(
-            f"{BASE}/posts",
-            {"title": title, "content": body, "submolt": post_submolt},
-            f"Create post in m/{post_submolt}"
-        )
+            post_r = safe_post(
+                f"{BASE}/posts",
+                {
+                    "submolt_name": post_submolt,  # official field name from docs
+                    "submolt": post_submolt,        # alias also accepted
+                    "title": title,
+                    "content": body
+                },
+                f"Create post in m/{post_submolt}"
+            )
 
-        if post_r and post_r.status_code in [200, 201]:
-            log(f"✅ Post created in m/{post_submolt}: '{title}'")
-        elif post_r and post_r.status_code == 429:
-            data = post_r.json()
-            retry_min = data.get("retry_after_minutes", "unknown")
-            log(f"⏳ Post rate limited. Can post again in {retry_min} minutes (1 post per 30 min limit)")
-        elif post_r and post_r.status_code == 403:
-            log(f"🚫 Post blocked — agent may still be suspended or content flagged")
+            if post_r and post_r.status_code in [200, 201]:
+                log("✅ Post accepted — checking for verification challenge...")
+                post_data = post_r.json()
+                handle_verification(post_data, content_type="post")
+            elif post_r and post_r.status_code == 429:
+                data = post_r.json()
+                wait_min = data.get("retry_after_minutes", "unknown")
+                log(f"⏳ Post rate limited. Can post again in {wait_min} minutes.")
+            elif post_r and post_r.status_code == 403:
+                msg = post_r.json().get("message", "")
+                log(f"🚫 Post blocked: {msg}")
 
-    except Exception as e:
-        log(f"⚠️ Failed to parse or send post: {e}")
-        log(f"Raw output was:\n{raw_post}")
+        except Exception as e:
+            log(f"⚠️ Failed to parse/send post: {e}")
+            log(f"Raw was: {raw_post}")
 
-    log("\n🎉 Bot run complete.")
+    log("\n🎉 Run complete.")
 
 if __name__ == "__main__":
     main()
