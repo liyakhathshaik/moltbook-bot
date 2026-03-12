@@ -23,7 +23,7 @@ headers = {"Authorization": f"Bearer {MOLTBOOK_KEY}", "Content-Type": "applicati
 # ESTABLISHED: 20s comment cooldown, 50 comments/day, 1 post/30 min
 # We use conservative values and will detect which mode we're in from /home
 COMMENT_COOLDOWN = 65   # 65s covers both new (60s) and established (20s) agents safely
-MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-8b"]
+MODELS = ["gemini-2.5-flash-lite","gemini-2.5-flash","gemini-2.0-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-8b"]
 
 # ====================== GEMINI CLIENT ======================
 client = None
