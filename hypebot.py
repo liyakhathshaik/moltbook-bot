@@ -443,7 +443,7 @@ def main():
     log(f"Posts available: {len(unique_posts)} total, {len(fresh_posts)} fresh (never engaged)")
 
     # ── Only comment on posts with ≥100 comments ──
-    COMMENT_THRESHOLD = 100
+    COMMENT_THRESHOLD = 15
     high_comment_posts = [
         p for p in fresh_posts
         if p.get("comments_count", 0) >= COMMENT_THRESHOLD
