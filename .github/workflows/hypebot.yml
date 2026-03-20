@@ -1,8 +1,8 @@
-name: SpaceReelsKing HypeBot - Phase 1 (Ultra Safe)
+name: SpaceReelsKing HypeBot - Phase 2 (Hourly Space Posts)
 
 on:
   schedule:
-    - cron: '0 4,16 * * *'   # only twice a day, 12 hours apart
+    - cron: '0 * * * *'         # every hour
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: pip install google-genai requests
 
-      - name: Run SpaceReelsKing (New GenAI + 3 keys fallback)
+      - name: Run SpaceReelsKing
         env:
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           GEMINIKEY1: ${{ secrets.GEMINIKEY1 }}
