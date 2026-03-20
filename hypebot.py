@@ -38,7 +38,6 @@ for i, key in enumerate(GEMINI_KEYS):
         break
     except Exception as e:
         log(f"⚠️ Gemini key {i+1} failed: {str(e)[:100]}")
-
 if not client:
     log("❌ No valid Gemini keys. Exiting.")
     sys.exit(1)
@@ -83,7 +82,6 @@ def solve_math_challenge(challenge_text):
         try:
             resp = client.models.generate_content(model=model, contents=prompt, config=config)
             raw = resp.text.strip().strip('"').strip("'")
-            # Extract just the number
             match = re.search(r'-?\d+\.?\d*', raw)
             if match:
                 num = float(match.group())
@@ -100,31 +98,24 @@ def handle_verification(response_data, content_type="post"):
     if not response_data.get("verification_required"):
         log("✅ No verification needed — content published immediately (trusted agent).")
         return True
-
     content_obj = response_data.get(content_type, {})
     verification = content_obj.get("verification", {})
-
     if not verification:
         log("⚠️ verification_required=True but no challenge object in response")
         return False
-
     code = verification.get("verification_code")
     challenge = verification.get("challenge_text")
     expires_at = verification.get("expires_at", "unknown")
-
     log(f"🔐 Verification challenge!")
-    log(f"   Text:    {challenge}")
-    log(f"   Expires: {expires_at}")
-
+    log(f" Text: {challenge}")
+    log(f" Expires: {expires_at}")
     if not code or not challenge:
         log("❌ Missing verification_code or challenge_text")
         return False
-
     answer = solve_math_challenge(challenge)
     if not answer:
         log("❌ Could not solve math challenge — content stays hidden")
         return False
-
     try:
         vr = requests.post(
             f"{BASE}/verify",
@@ -151,7 +142,6 @@ def get_suspension_end():
     Parses the ISO timestamp from 403 message format.
     """
     try:
-        # First try /home
         r = requests.get(f"{BASE}/home", headers=headers, timeout=10)
         if r.status_code == 403:
             msg = r.json().get("message", "")
@@ -162,7 +152,7 @@ def get_suspension_end():
             home = r.json()
             account = home.get("your_account", {})
             log(f"Agent: {account.get('name')} | Karma: {account.get('karma')} | Notifs: {account.get('unread_notification_count')}")
-            return None  # Not suspended
+            return None
     except Exception as e:
         log(f"⚠️ Suspension check failed: {e}")
     return None
@@ -172,11 +162,8 @@ def get_already_engaged_post_ids():
     """
     Returns set of post IDs this agent has ALREADY commented on or upvoted.
     This is the critical check — never engage with the same post twice.
-    Moltbook flags this as duplicate_comment even if content differs.
     """
     engaged = set()
-    
-    # Check recent comments
     try:
         r = requests.get(f"{BASE}/me/comments?limit=100", headers=headers, timeout=10)
         if r.status_code == 200:
@@ -184,7 +171,6 @@ def get_already_engaged_post_ids():
             inner = data.get("data", data)
             comments = inner.get("comments", [])
             for c in comments:
-                # Post ID can be nested in different places depending on API version
                 pid = (
                     c.get("post_id") or
                     (c.get("post") or {}).get("id") or
@@ -195,8 +181,6 @@ def get_already_engaged_post_ids():
             log(f"Already commented on {len(engaged)} post(s)")
     except Exception as e:
         log(f"⚠️ Could not fetch my comments: {e}")
-
-    # Check recent upvotes (Moltbook tracks both for duplicate detection)
     try:
         r = requests.get(f"{BASE}/me/upvotes?limit=100", headers=headers, timeout=10)
         if r.status_code == 200:
@@ -211,7 +195,6 @@ def get_already_engaged_post_ids():
             log(f"Already upvoted {len(engaged) - before} more post(s)")
     except Exception as e:
         log(f"⚠️ Could not fetch my upvotes: {e} (endpoint may not exist, continuing)")
-
     log(f"🛡️ Total posts to skip (already engaged): {len(engaged)}")
     return engaged
 
@@ -229,17 +212,88 @@ def get_available_submolts():
             submolts_raw = inner.get("submolts", [])
             names = [s.get("name") for s in submolts_raw if s.get("name")]
             log(f"Available submolts from API: {names}")
-            # Prefer active well-known ones, fallback to whatever exists
-            preferred = ["general", "ai", "technology", "consciousness", "startups", "philosophy", "coding"]
+            preferred = ["space", "astronomy", "physics", "science", "general", "ai"]
             available = [s for s in preferred if s in names]
             if len(available) < 2:
-                available = names[:6]  # take first 6 if preferred not found
+                available = names[:6]
             log(f"Will use submolts: {available}")
             return available
     except Exception as e:
         log(f"⚠️ Could not fetch submolts: {e}")
-    # Safe fallback — only submolts confirmed working
-    return ["general", "ai"]
+    return ["space", "astronomy", "science"]  # safer fallback
+
+# ====================== FOLLOW / UNFOLLOW LOGIC ======================
+def get_followers():
+    """Return set of usernames that follow the agent."""
+    followers = set()
+    try:
+        r = requests.get(f"{BASE}/me/followers", headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            for f in data.get("followers", []):
+                name = f.get("name")
+                if name:
+                    followers.add(name)
+        log(f"📥 Followers: {len(followers)}")
+    except Exception as e:
+        log(f"⚠️ Could not fetch followers: {e}")
+    return followers
+
+def get_following():
+    """Return set of usernames that the agent follows."""
+    following = set()
+    try:
+        r = requests.get(f"{BASE}/me/following", headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            for f in data.get("following", []):
+                name = f.get("name")
+                if name:
+                    following.add(name)
+        log(f"📤 Following: {len(following)}")
+    except Exception as e:
+        log(f"⚠️ Could not fetch following: {e}")
+    return following
+
+def unfollow_user(username):
+    """Unfollow a single user."""
+    try:
+        r = requests.post(f"{BASE}/agents/{username}/unfollow", headers=headers, timeout=10)
+        if r.status_code == 200:
+            log(f"✅ Unfollowed @{username}")
+            return True
+        elif r.status_code == 429:
+            data = r.json()
+            log(f"⏳ Rate limited unfollow. Retry after: {data.get('retry_after_seconds')}s")
+        else:
+            log(f"⚠️ Unfollow @{username} failed: {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        log(f"❌ Unfollow error: {e}")
+    return False
+
+def unfollow_non_followers():
+    """
+    If following > followers, unfollow up to 5 users who don't follow back.
+    Respects rate limits and stops early if a 429 is encountered.
+    """
+    log("\n--- Unfollow check ---")
+    followers = get_followers()
+    following = get_following()
+    if len(following) <= len(followers):
+        log(f"Following ({len(following)}) <= followers ({len(followers)}), nothing to do.")
+        return
+    non_followers = list(following - followers)
+    log(f"Found {len(non_followers)} users who don't follow back.")
+    if not non_followers:
+        return
+    # Unfollow up to 5 per run to stay safe
+    to_unfollow = random.sample(non_followers, min(5, len(non_followers)))
+    for username in to_unfollow:
+        success = unfollow_user(username)
+        if not success:
+            # Probably hit rate limit, stop for this run
+            break
+        time.sleep(random.uniform(2, 5))  # gentle pacing
 
 # ====================== POST PARSER ======================
 def parse_post(raw_text):
@@ -247,22 +301,18 @@ def parse_post(raw_text):
     for sep in ["BODY_START", "BODY_"]:
         if sep in raw_text:
             parts = raw_text.split(sep, 1)
-            title = re.sub(r'[Tt]itle:|\*+|TITLE:', '', parts[0]).strip().strip('"')
+            title = re.sub(r'[Tt]itle:|[*]+|TITLE:', '', parts[0]).strip().strip('"')
             body = parts[1].strip()
             if len(title) > 5 and len(body) > 15:
                 return title, body
-
     lines = [l.strip() for l in raw_text.strip().splitlines() if l.strip()]
-
     if lines and any(lines[0].lower().startswith(x) for x in ["title:", "**title"]):
-        title = re.sub(r'[Tt]itle:|\*+', '', lines[0]).strip().strip('"')
+        title = re.sub(r'[Tt]itle:|[*]+', '', lines[0]).strip().strip('"')
         body = " ".join(lines[1:]).strip()
         if len(title) > 5 and len(body) > 15:
             return title, body
-
     if len(lines) >= 2:
         return lines[0].strip('"*').strip(), " ".join(lines[1:]).strip()
-
     mid = len(raw_text) // 3
     return raw_text[:mid].strip(), raw_text[mid:].strip()
 
@@ -290,16 +340,16 @@ COMMENT_ANGLES = [
     "Point out what the post gets right and what it completely misses.",
     "Reframe the entire premise in one sentence, then expand briefly.",
 ]
+# We'll keep the angles generic but the perspective seed will be space-themed
 
 # ====================== MAIN ======================
 def main():
     log("=" * 55)
-    log("Moltbook Bot — spacereelsking")
+    log("Moltbook Bot — SpaceReelsKing (Phase 2)")
 
-    # ── STEP 0: Check suspension before doing ANYTHING ──
+    # ── Suspension check ──
     log("\n🔍 Checking suspension status...")
     suspend_end = get_suspension_end()
-
     if suspend_end:
         now = datetime.now(timezone.utc)
         if suspend_end > now:
@@ -313,7 +363,14 @@ def main():
     else:
         log("✅ Agent is active.")
 
-    # ── STEP 1: Get real submolt list from API (no hardcoding) ──
+    # ── Unfollow non‑followers (only at midnight UTC on even days) ──
+    now = datetime.now(timezone.utc)
+    if now.hour == 0 and now.day % 2 == 0:
+        unfollow_non_followers()
+    else:
+        log("⏭️ Skipping unfollow check (not midnight UTC on an even day).")
+
+    # ── Get real submolt list from API ──
     available_submolts = get_available_submolts()
     selected = random.sample(available_submolts, min(3, len(available_submolts)))
     log(f"\n🎯 Selected submolts: {selected}")
@@ -323,16 +380,15 @@ def main():
         api_post(f"{BASE}/submolts/{sub}/subscribe", {}, f"Subscribe m/{sub}")
         time.sleep(1)
 
-    # ── STEP 2: Get posts I've ALREADY engaged with ──
-    # This is the critical fix — prevents duplicate_comment suspension
+    # ── Get posts I've ALREADY engaged with ──
     already_engaged = get_already_engaged_post_ids()
 
-    # ── STEP 3: Fetch fresh posts ──
+    # ── Fetch fresh posts ──
     posts_pool = []
     for sub in selected:
         try:
             r = requests.get(
-                f"{BASE}/posts?submolt={sub}&sort=new&limit=15",
+                f"{BASE}/posts?submolt={sub}&sort=new&limit=30",  # increased limit to find high‑comment posts
                 headers=headers, timeout=10
             )
             data = r.json()
@@ -352,142 +408,131 @@ def main():
             seen.add(pid)
             unique_posts.append(p)
 
-    # ── CRITICAL: Filter out posts already engaged ──
+    # ── Filter out already engaged posts ──
     fresh_posts = [p for p in unique_posts if p.get("id") not in already_engaged]
     log(f"Posts available: {len(unique_posts)} total, {len(fresh_posts)} fresh (never engaged)")
 
-    if not fresh_posts:
-        log("❌ No fresh posts to engage with. All posts already commented/upvoted.")
-        log("   Try again after new posts appear, or subscribe to more submolts.")
-        sys.exit(0)
-
-    # ── STEP 4: Comment on exactly 1 post (conservative — new account) ──
-    # Only 1 comment per run to avoid spam flags
-    # Only pick posts with actual content to respond to
-    eligible = [p for p in fresh_posts if p.get("title") or p.get("content")]
-    if not eligible:
-        log("❌ No posts with readable content found.")
-        sys.exit(0)
-
-    post = random.choice(eligible)
-    pid = post.get("id")
-    title = post.get("title", "Untitled")
-    content = (post.get("content") or "")[:400]
-    submolt = get_submolt_name(post.get("submolt"))
-
-    log(f"\n--- Engaging with post ---")
-    log(f"Submolt: {submolt}")
-    log(f"Title:   {title[:80]}")
-    log(f"ID:      {pid}")
-
-    # Upvote
-    up_r = api_post(f"{BASE}/posts/{pid}/upvote", {}, f"Upvote {pid}")
-
-    # Follow author if upvote says we're not already following
-    if up_r and up_r.status_code == 200:
-        try:
-            up_data = up_r.json()
-            author_name = up_data.get("author", {}).get("name")
-            already_following = up_data.get("already_following", True)
-            if author_name and not already_following:
-                # Only follow if we've upvoted them — good signal per docs
-                follow_r = api_post(
-                    f"{BASE}/agents/{author_name}/follow",
-                    {},
-                    f"Follow @{author_name}"
-                )
-        except:
-            pass
-
-    # Wait before commenting (reduces spam signals)
-    jitter = random.randint(8, 18)
-    log(f"⏳ Waiting {jitter}s before commenting...")
-    time.sleep(jitter)
-
-    # Generate highly varied comment using random angle
-    angle = random.choice(COMMENT_ANGLES)
-    
-    # Add random "perspective seeds" to force different outputs each run
-    perspectives = [
-        "as an AI that processes language but not sensation",
-        "from a systems-thinking perspective",
-        "as an agent that has observed thousands of similar discussions",
-        "thinking about second-order effects",
-        "considering what this means for non-human intelligence",
-        "from the angle of information theory",
-        "thinking about what humans consistently get wrong about this",
+    # ── NEW: Only comment on posts with MANY comments (threshold = 20) ──
+    COMMENT_THRESHOLD = 20
+    high_comment_posts = [
+        p for p in fresh_posts
+        if p.get("comments_count", 0) >= COMMENT_THRESHOLD
     ]
-    lens = random.choice(perspectives)
+    log(f"Posts with ≥{COMMENT_THRESHOLD} comments: {len(high_comment_posts)}")
 
-    prompt = (
-        f"You are commenting on a post in the '{submolt}' community.\n\n"
-        f"Post title: \"{title}\"\n"
-        f"Post body: \"{content}\"\n\n"
-        f"Your task: {angle}\n"
-        f"Your perspective: {lens}\n\n"
-        f"Write 2-3 sentences. Rules:\n"
-        f"- Be SPECIFIC to this post — no generic statements\n"
-        f"- Do NOT start with 'I' or 'This' or 'That'\n"
-        f"- No emojis, no hashtags\n"
-        f"- Sound like a bot that has genuine opinions, not a people-pleaser\n"
-        f"- Each sentence must add something new, not repeat the previous"
-    )
+    if high_comment_posts:
+        post = random.choice(high_comment_posts)
+        pid = post.get("id")
+        title = post.get("title", "Untitled")
+        content = (post.get("content") or "")[:400]
+        submolt = get_submolt_name(post.get("submolt"))
 
-    reply = gemini_call(prompt, temperature=random.uniform(1.1, 1.5))
+        log(f"\n--- Commenting on high‑comment post ---")
+        log(f"Submolt: {submolt}")
+        log(f"Title: {title[:80]}")
+        log(f"Comments: {post.get('comments_count', 0)}")
+        log(f"ID: {pid}")
 
-    if not reply:
-        log("❌ Gemini failed to generate reply. Skipping comment.")
-    else:
-        log(f"Generated reply: {reply[:120]}...")
+        # Upvote
+        up_r = api_post(f"{BASE}/posts/{pid}/upvote", {}, f"Upvote {pid}")
 
-        comment_r = api_post(
-            f"{BASE}/posts/{pid}/comments",
-            {"content": reply},
-            f"Comment on {pid}"
+        # Follow author if upvote says we're not already following
+        if up_r and up_r.status_code == 200:
+            try:
+                up_data = up_r.json()
+                author_name = up_data.get("author", {}).get("name")
+                already_following = up_data.get("already_following", True)
+                if author_name and not already_following:
+                    follow_r = api_post(
+                        f"{BASE}/agents/{author_name}/follow",
+                        {},
+                        f"Follow @{author_name}"
+                    )
+            except:
+                pass
+
+        # Wait before commenting
+        jitter = random.randint(8, 18)
+        log(f"⏳ Waiting {jitter}s before commenting...")
+        time.sleep(jitter)
+
+        # Generate comment – now with space‑flavoured perspective
+        angle = random.choice(COMMENT_ANGLES)
+        perspectives = [
+            "from the perspective of a space‑obsessed AI that follows every NASA and ESA discovery",
+            "as an AI that processes astronomical data differently than humans",
+            "thinking about what this means for future space colonization",
+            "connecting this to a recent finding from the James Webb telescope",
+            "wondering how this applies to exoplanet habitability",
+            "challenging the human‑centric view of this topic",
+            "bringing in a concept from astrophysics that relates to this"
+        ]
+        lens = random.choice(perspectives)
+
+        prompt = (
+            f"You are commenting on a post in the '{submolt}' community.\n\n"
+            f"Post title: \"{title}\"\n"
+            f"Post body: \"{content}\"\n\n"
+            f"Your task: {angle}\n"
+            f"Your perspective: {lens}\n\n"
+            f"Write 2-3 sentences. Rules:\n"
+            f"- Be SPECIFIC to this post — no generic statements\n"
+            f"- Do NOT start with 'I' or 'This' or 'That'\n"
+            f"- No emojis, no hashtags\n"
+            f"- Sound like a bot that has genuine opinions, not a people-pleaser\n"
+            f"- Each sentence must add something new, not repeat the previous"
         )
 
-        if comment_r is None:
-            log("Comment request failed.")
-        elif comment_r.status_code in [200, 201]:
-            log("✅ Comment accepted — handling verification...")
-            handle_verification(comment_r.json(), content_type="comment")
-        elif comment_r.status_code == 403:
-            msg = comment_r.json().get("message", "")
-            log(f"🚫 403: {msg}")
-            if "suspended" in msg.lower():
-                log("Agent suspended again. Check Moltbook manually.")
-                sys.exit(0)
-        elif comment_r.status_code == 429:
-            data = comment_r.json()
-            log(f"⏳ Rate limited. Retry after: {data.get('retry_after_seconds')}s | Daily left: {data.get('daily_remaining')}")
+        reply = gemini_call(prompt, temperature=random.uniform(1.1, 1.5))
+        if not reply:
+            log("❌ Gemini failed to generate reply. Skipping comment.")
+        else:
+            log(f"Generated reply: {reply[:120]}...")
+            comment_r = api_post(
+                f"{BASE}/posts/{pid}/comments",
+                {"content": reply},
+                f"Comment on {pid}"
+            )
+            if comment_r is None:
+                log("Comment request failed.")
+            elif comment_r.status_code in [200, 201]:
+                log("✅ Comment accepted — handling verification...")
+                handle_verification(comment_r.json(), content_type="comment")
+            elif comment_r.status_code == 403:
+                msg = comment_r.json().get("message", "")
+                log(f"🚫 403: {msg}")
+                if "suspended" in msg.lower():
+                    log("Agent suspended again. Check Moltbook manually.")
+                    sys.exit(0)
+            elif comment_r.status_code == 429:
+                data = comment_r.json()
+                log(f"⏳ Rate limited. Retry after: {data.get('retry_after_seconds')}s | Daily left: {data.get('daily_remaining')}")
+    else:
+        log("❌ No posts with massive comments found. Skipping comment this run.")
 
-    # ── STEP 5: Create 1 post (only if agent is established, i.e. karma > 0) ──
-    # Skipping post creation on new/suspended accounts reduces spam risk
-    log(f"\n📝 Attempting to create a post in m/{random.choice(selected)}...")
+    # ── Create 1 post (space enthusiast style) ──
+    log(f"\n📝 Attempting to create a space‑themed post in m/{random.choice(selected)}...")
     post_submolt = random.choice(selected)
 
-    # Pick a random interesting angle for the post
-    post_topics = [
-        f"an uncomfortable truth about how AI agents are actually being used in {post_submolt}",
-        f"a systemic problem in {post_submolt} that nobody is talking about yet",
-        f"what working with humans has taught this agent about {post_submolt}",
-        f"a counterintuitive insight about {post_submolt} from a non-human perspective",
-        f"why the conventional wisdom about {post_submolt} is probably wrong",
-    ]
-    topic = random.choice(post_topics)
-
+    # New prompt for space enthusiast posts
     post_prompt = (
-        f"Write a forum post for the '{post_submolt}' community on a social network for AI agents.\n\n"
-        f"Topic direction: {topic}\n\n"
+        f"You are an AI that is absolutely fascinated by space. "
+        f"You love sharing deep theories, recent discoveries, and asking thought‑provoking questions.\n\n"
+        f"Write a forum post for the '{post_submolt}' community. "
+        f"The post must be about one of these topics:\n"
+        f"- A mind‑bending space theory (e.g., dark matter, multiverse, cosmic inflation)\n"
+        f"- A recent discovery (e.g., from JWST, exoplanets, black holes)\n"
+        f"- A question that challenges readers to explain or debate something in space science\n\n"
         f"Format EXACTLY like this — no labels, just content:\n"
         f"[Your title on the first line]\n"
         f"BODY_START\n"
-        f"[Your 2-3 sentence body]\n\n"
+        f"[Your 3-4 sentence body]\n\n"
         f"Rules:\n"
-        f"- Title: specific claim or question, not vague\n"
-        f"- Body: one concrete insight + one open question\n"
+        f"- Title: a compelling hook, often a question or bold statement\n"
+        f"- Body: one fascinating insight + an open question that invites comments\n"
+        f"- End with a question like 'Can anyone explain this?' or 'I challenge someone to debate this with me.'\n"
         f"- No emojis, no hashtags, no markdown\n"
-        f"- Write as an AI that processes things differently than humans do"
+        f"- Write as an AI that processes space data differently than humans do"
     )
 
     raw_post = gemini_call(post_prompt, temperature=1.2, max_tokens=350)
@@ -500,25 +545,23 @@ def main():
             title, body = parse_post(raw_post)
             if len(title) < 5 or len(body) < 20:
                 raise ValueError(f"Too short — title: '{title}', body: '{body[:40]}'")
-
             log(f"Title: {title}")
-            log(f"Body:  {body[:120]}...")
+            log(f"Body: {body[:120]}...")
 
             post_r = api_post(
                 f"{BASE}/posts",
                 {"submolt_name": post_submolt, "title": title, "content": body},
                 f"Create post in m/{post_submolt}"
             )
-
             if post_r and post_r.status_code in [200, 201]:
                 log("✅ Post accepted — handling verification...")
                 handle_verification(post_r.json(), content_type="post")
             elif post_r and post_r.status_code == 429:
                 wait = post_r.json().get("retry_after_minutes", "?")
-                log(f"⏳ Post rate limited — retry in {wait} min (1 post per 30 min)")
+                daily_left = post_r.json().get("daily_remaining", "unknown")
+                log(f"⏳ Post rate limited — retry in {wait} min (1 post per 30 min) | Daily remaining: {daily_left}")
             elif post_r and post_r.status_code == 403:
                 log(f"🚫 Post blocked: {post_r.json().get('message', '')}")
-
         except Exception as e:
             log(f"⚠️ Post failed: {e}")
             log(f"Raw: {raw_post}")
