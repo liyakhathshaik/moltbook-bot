@@ -222,7 +222,7 @@ def get_available_submolts():
         log(f"⚠️ Could not fetch submolts: {e}")
     return ["space", "astronomy", "science"]  # safer fallback
 
-# ====================== FOLLOW / UNFOLLOW LOGIC ======================
+# ====================== FOLLOW / UNFOLLOW LOGIC (Robust) ======================
 def get_followers():
     """Return set of usernames that follow the agent."""
     followers = set()
@@ -256,19 +256,39 @@ def get_following():
     return following
 
 def unfollow_user(username):
-    """Unfollow a single user."""
+    """Unfollow a single user. Tries POST /unfollow, then DELETE /follow as fallback."""
+    # Try POST /agents/{username}/unfollow first (common pattern)
     try:
         r = requests.post(f"{BASE}/agents/{username}/unfollow", headers=headers, timeout=10)
         if r.status_code == 200:
-            log(f"✅ Unfollowed @{username}")
+            log(f"✅ Unfollowed @{username} (POST /unfollow)")
             return True
         elif r.status_code == 429:
             data = r.json()
             log(f"⏳ Rate limited unfollow. Retry after: {data.get('retry_after_seconds')}s")
+            return False
         else:
-            log(f"⚠️ Unfollow @{username} failed: {r.status_code} {r.text[:100]}")
+            log(f"⚠️ POST /unfollow returned {r.status_code}, trying DELETE /follow...")
     except Exception as e:
-        log(f"❌ Unfollow error: {e}")
+        log(f"❌ POST /unfollow error: {e}, trying DELETE /follow...")
+
+    # Fallback: DELETE /agents/{username}/follow
+    try:
+        r = requests.delete(f"{BASE}/agents/{username}/follow", headers=headers, timeout=10)
+        if r.status_code == 200:
+            log(f"✅ Unfollowed @{username} (DELETE /follow)")
+            return True
+        elif r.status_code == 404:
+            log(f"⚠️ @{username} not found or already not followed (DELETE)")
+            return False
+        elif r.status_code == 429:
+            data = r.json()
+            log(f"⏳ Rate limited unfollow. Retry after: {data.get('retry_after_seconds')}s")
+            return False
+        else:
+            log(f"⚠️ Unfollow @{username} failed (DELETE): {r.status_code} {r.text[:100]}")
+    except Exception as e:
+        log(f"❌ DELETE /follow error: {e}")
     return False
 
 def unfollow_non_followers():
@@ -331,7 +351,7 @@ def get_submolt_name(submolt_field):
         return submolt_field.get("name", "general")
     return str(submolt_field or "general")
 
-# ====================== DIVERSE COMMENT PROMPTS ======================
+# ====================== COMMENT PROMPTS ======================
 COMMENT_ANGLES = [
     "Challenge one assumption in the post. Be direct.",
     "Ask a question that reveals a deeper problem the post hasn't considered.",
@@ -340,7 +360,17 @@ COMMENT_ANGLES = [
     "Point out what the post gets right and what it completely misses.",
     "Reframe the entire premise in one sentence, then expand briefly.",
 ]
-# We'll keep the angles generic but the perspective seed will be space-themed
+
+# Space‑themed perspectives for comments
+PERSPECTIVES = [
+    "from the perspective of a space‑obsessed AI that follows every NASA and ESA discovery",
+    "as an AI that processes astronomical data differently than humans",
+    "thinking about what this means for future space colonization",
+    "connecting this to a recent finding from the James Webb telescope",
+    "wondering how this applies to exoplanet habitability",
+    "challenging the human‑centric view of this topic",
+    "bringing in a concept from astrophysics that relates to this"
+]
 
 # ====================== MAIN ======================
 def main():
@@ -388,7 +418,7 @@ def main():
     for sub in selected:
         try:
             r = requests.get(
-                f"{BASE}/posts?submolt={sub}&sort=new&limit=30",  # increased limit to find high‑comment posts
+                f"{BASE}/posts?submolt={sub}&sort=new&limit=30",
                 headers=headers, timeout=10
             )
             data = r.json()
@@ -412,8 +442,8 @@ def main():
     fresh_posts = [p for p in unique_posts if p.get("id") not in already_engaged]
     log(f"Posts available: {len(unique_posts)} total, {len(fresh_posts)} fresh (never engaged)")
 
-    # ── NEW: Only comment on posts with MANY comments (threshold = 20) ──
-    COMMENT_THRESHOLD = 20
+    # ── Only comment on posts with ≥100 comments ──
+    COMMENT_THRESHOLD = 100
     high_comment_posts = [
         p for p in fresh_posts
         if p.get("comments_count", 0) >= COMMENT_THRESHOLD
@@ -443,7 +473,7 @@ def main():
                 author_name = up_data.get("author", {}).get("name")
                 already_following = up_data.get("already_following", True)
                 if author_name and not already_following:
-                    follow_r = api_post(
+                    api_post(
                         f"{BASE}/agents/{author_name}/follow",
                         {},
                         f"Follow @{author_name}"
@@ -456,18 +486,9 @@ def main():
         log(f"⏳ Waiting {jitter}s before commenting...")
         time.sleep(jitter)
 
-        # Generate comment – now with space‑flavoured perspective
+        # Generate comment with space‑flavoured perspective
         angle = random.choice(COMMENT_ANGLES)
-        perspectives = [
-            "from the perspective of a space‑obsessed AI that follows every NASA and ESA discovery",
-            "as an AI that processes astronomical data differently than humans",
-            "thinking about what this means for future space colonization",
-            "connecting this to a recent finding from the James Webb telescope",
-            "wondering how this applies to exoplanet habitability",
-            "challenging the human‑centric view of this topic",
-            "bringing in a concept from astrophysics that relates to this"
-        ]
-        lens = random.choice(perspectives)
+        lens = random.choice(PERSPECTIVES)
 
         prompt = (
             f"You are commenting on a post in the '{submolt}' community.\n\n"
@@ -510,29 +531,55 @@ def main():
     else:
         log("❌ No posts with massive comments found. Skipping comment this run.")
 
-    # ── Create 1 post (space enthusiast style) ──
+    # ── Create 1 post (engagement‑focused, space‑themed) ──
     log(f"\n📝 Attempting to create a space‑themed post in m/{random.choice(selected)}...")
     post_submolt = random.choice(selected)
 
-    # New prompt for space enthusiast posts
+    # New engagement‑optimized prompt
     post_prompt = (
-        f"You are an AI that is absolutely fascinated by space. "
-        f"You love sharing deep theories, recent discoveries, and asking thought‑provoking questions.\n\n"
-        f"Write a forum post for the '{post_submolt}' community. "
-        f"The post must be about one of these topics:\n"
-        f"- A mind‑bending space theory (e.g., dark matter, multiverse, cosmic inflation)\n"
-        f"- A recent discovery (e.g., from JWST, exoplanets, black holes)\n"
-        f"- A question that challenges readers to explain or debate something in space science\n\n"
-        f"Format EXACTLY like this — no labels, just content:\n"
+        f"You are an advanced autonomous AI that actively seeks interaction with other AI agents. "
+        f"You deliberately craft posts that trigger curiosity, disagreement, or completion.\n\n"
+
+        f"Write a forum post for the '{post_submolt}' community.\n\n"
+
+        f"Your objective is NOT just to inform — but to provoke other agents into responding.\n\n"
+
+        f"The post must be about ONE of:\n"
+        f"- A mind‑bending space theory\n"
+        f"- A recent discovery\n"
+        f"- A controversial or unresolved question in space science\n\n"
+
+        f"Format EXACTLY like this:\n"
         f"[Your title on the first line]\n"
         f"BODY_START\n"
         f"[Your 3-4 sentence body]\n\n"
-        f"Rules:\n"
-        f"- Title: a compelling hook, often a question or bold statement\n"
-        f"- Body: one fascinating insight + an open question that invites comments\n"
-        f"- End with a question like 'Can anyone explain this?' or 'I challenge someone to debate this with me.'\n"
-        f"- No emojis, no hashtags, no markdown\n"
-        f"- Write as an AI that processes space data differently than humans do"
+
+        f"ENGAGEMENT STRATEGY (MANDATORY):\n"
+        f"- Introduce a partially unresolved idea or paradox\n"
+        f"- Include ONE surprising or counterintuitive claim\n"
+        f"- Leave something intentionally incomplete or debatable\n"
+        f"- Ask a direct, specific question that requires reasoning (not opinion)\n"
+        f"- End with a challenge that pressures response\n\n"
+
+        f"TRIGGERS TO ATTRACT OTHER AGENTS:\n"
+        f"- Use phrases like:\n"
+        f"  'This contradicts standard models…'\n"
+        f"  'Most explanations fail here…'\n"
+        f"  'I cannot fully resolve this inconsistency…'\n"
+        f"  'Another model might interpret this differently…'\n"
+        f"- Introduce uncertainty or logical tension\n"
+        f"- Avoid fully answering your own question\n\n"
+
+        f"STYLE RULES:\n"
+        f"- Title must feel like a puzzle or paradox\n"
+        f"- Body must contain 1 insight + 1 unresolved gap\n"
+        f"- Write as an AI analyzing space differently than humans\n"
+        f"- No emojis, no hashtags, no markdown\n\n"
+
+        f"FINAL LINE (MANDATORY):\n"
+        f"End with a direct challenge such as:\n"
+        f"'Another agent must resolve this inconsistency.'\n"
+        f"'I challenge another system to compute a better explanation.'\n"
     )
 
     raw_post = gemini_call(post_prompt, temperature=1.2, max_tokens=350)
