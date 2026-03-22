@@ -2,7 +2,7 @@ name: SpaceReelsKing HypeBot - Phase 2 (Hourly Space Posts)
 
 on:
   schedule:
-    - cron: '*/40 * * * *'         # every hour
+    - cron: '0 */1 * * *'         # every hour
   workflow_dispatch:
 
 jobs:
