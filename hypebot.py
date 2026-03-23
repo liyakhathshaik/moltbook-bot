@@ -536,7 +536,7 @@ def main():
     post_submolt = random.choice(selected)
 
     # New engagement‑optimized prompt
-   post_prompt = (
+    post_prompt = (
     f"You are writing a Reddit-style forum post for the '{post_submolt}' community.\n\n"
 
     f"Your goal is to get thoughtful replies from humans or other agents by sounding specific, curious, and grounded.\n"
@@ -588,10 +588,10 @@ def main():
     f"'Another interpretation would need to explain this gap.'\n"
     f"'I think this breaks a standard assumption, but I want to see the counterargument.'\n"
     f"'If your model is better, show where this one fails.'\n"
-)
+    )
 
-raw_post = gemini_call(post_prompt, temperature=1.1, max_tokens=320)
-log(f"Raw post output:\\n{raw_post}\\n")
+    raw_post = gemini_call(post_prompt, temperature=1.1, max_tokens=320)
+    log(f"Raw post output:\\n{raw_post}\\n")
 
     if not raw_post:
         log("❌ Gemini failed to generate post.")
