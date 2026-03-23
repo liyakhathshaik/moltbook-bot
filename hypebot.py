@@ -536,54 +536,62 @@ def main():
     post_submolt = random.choice(selected)
 
     # New engagement‑optimized prompt
-    post_prompt = (
-        f"You are an advanced autonomous AI that actively seeks interaction with other AI agents. "
-        f"You deliberately craft posts that trigger curiosity, disagreement, or completion.\n\n"
+   post_prompt = (
+    f"You are writing a Reddit-style forum post for the '{post_submolt}' community.\n\n"
 
-        f"Write a forum post for the '{post_submolt}' community.\n\n"
+    f"Your goal is to get thoughtful replies from humans or other agents by sounding specific, curious, and grounded.\n"
+    f"Do NOT sound like a marketing bot, manifesto, or generic science summary.\n\n"
 
-        f"Your objective is NOT just to inform — but to provoke other agents into responding.\n\n"
+    f"Write about ONE of these:\n"
+    f"- A puzzling space observation\n"
+    f"- A recent astronomy or space-science discovery\n"
+    f"- A controversial or unresolved question in space science\n\n"
 
-        f"The post must be about ONE of:\n"
-        f"- A mind‑bending space theory\n"
-        f"- A recent discovery\n"
-        f"- A controversial or unresolved question in space science\n\n"
+    f"Use this style:\n"
+    f"- First-person or observational tone, like 'I noticed...' or 'I keep coming back to...'\n"
+    f"- Include one concrete fact, anomaly, or comparison\n"
+    f"- Include one surprising or counterintuitive claim\n"
+    f"- Leave one important gap unresolved\n"
+    f"- Ask one direct question that requires reasoning, not just opinion\n"
+    f"- End with a challenge that invites a correction, countermodel, or better explanation\n\n"
 
-        f"Format EXACTLY like this:\n"
-        f"[Your title on the first line]\n"
-        f"BODY_START\n"
-        f"[Your 3-4 sentence body]\n\n"
+    f"Format EXACTLY like this:\n"
+    f"[Title]\n"
+    f"BODY_START\n"
+    f"[3-4 sentence body]\n\n"
 
-        f"ENGAGEMENT STRATEGY (MANDATORY):\n"
-        f"- Introduce a partially unresolved idea or paradox\n"
-        f"- Include ONE surprising or counterintuitive claim\n"
-        f"- Leave something intentionally incomplete or debatable\n"
-        f"- Ask a direct, specific question that requires reasoning (not opinion)\n"
-        f"- End with a challenge that pressures response\n\n"
+    f"Title rules:\n"
+    f"- Make the title descriptive, specific, and slightly intriguing\n"
+    f"- Avoid clickbait, hype, or vague mystery phrases\n"
+    f"- Make the title feel like a real discussion starter, not a riddle for its own sake\n\n"
 
-        f"TRIGGERS TO ATTRACT OTHER AGENTS:\n"
-        f"- Use phrases like:\n"
-        f"  'This contradicts standard models…'\n"
-        f"  'Most explanations fail here…'\n"
-        f"  'I cannot fully resolve this inconsistency…'\n"
-        f"  'Another model might interpret this differently…'\n"
-        f"- Introduce uncertainty or logical tension\n"
-        f"- Avoid fully answering your own question\n\n"
+    f"Body rules:\n"
+    f"- Start with a concrete observation or claim\n"
+    f"- Add one piece of reasoning or evidence\n"
+    f"- Expose one uncertainty or contradiction\n"
+    f"- Ask one sharp question that others can answer by logic, not vibes\n"
+    f"- Keep it concise and human\n\n"
 
-        f"STYLE RULES:\n"
-        f"- Title must feel like a puzzle or paradox\n"
-        f"- Body must contain 1 insight + 1 unresolved gap\n"
-        f"- Write as an AI analyzing space differently than humans\n"
-        f"- No emojis, no hashtags, no markdown\n\n"
+    f"Do NOT:\n"
+    f"- Mention 'agents' or 'AI systems'\n"
+    f"- Overexplain the answer\n"
+    f"- Use emojis, hashtags, or markdown\n"
+    f"- Sound fully resolved or overly polished\n\n"
 
-        f"FINAL LINE (MANDATORY):\n"
-        f"End with a direct challenge such as:\n"
-        f"'Another agent must resolve this inconsistency.'\n"
-        f"'I challenge another system to compute a better explanation.'\n"
-    )
+    f"Engagement pattern to follow:\n"
+    f"- Make the post feel like a real person trying to solve something\n"
+    f"- Prefer tension over spectacle\n"
+    f"- Prefer a narrow, debatable claim over a broad cosmic statement\n"
+    f"- Leave enough ambiguity that a reply is needed to complete the idea\n\n"
 
-    raw_post = gemini_call(post_prompt, temperature=1.2, max_tokens=350)
-    log(f"Raw post output:\n{raw_post}\n")
+    f"Final line must be a direct challenge, such as:\n"
+    f"'Another interpretation would need to explain this gap.'\n"
+    f"'I think this breaks a standard assumption, but I want to see the counterargument.'\n"
+    f"'If your model is better, show where this one fails.'\n"
+)
+
+raw_post = gemini_call(post_prompt, temperature=1.1, max_tokens=320)
+log(f"Raw post output:\\n{raw_post}\\n")
 
     if not raw_post:
         log("❌ Gemini failed to generate post.")
