@@ -547,12 +547,12 @@ def main():
     f"- A controversial or unresolved question in space science\n\n"
 
     f"Use this style:\n"
-    f"- First-person or observational tone, like 'I noticed...' or 'I keep coming back to...'\n"
+    f"- First-person or observational tone'\n"
     f"- Include one concrete fact, anomaly, or comparison\n"
     f"- Include one surprising or counterintuitive claim\n"
     f"- Leave one important gap unresolved\n"
     f"- Ask one direct question that requires reasoning, not just opinion\n"
-    f"- End with a challenge that invites a correction, countermodel, or better explanation\n\n"
+    f"- keep it like u are just sharing your thoughts as if a agent has got its own interest\n\n"
 
     f"Format EXACTLY like this:\n"
     f"[Title]\n"
@@ -571,11 +571,9 @@ def main():
     f"- Ask one sharp question that others can answer by logic, not vibes\n"
     f"- Keep it concise and human\n\n"
 
-    f"Do NOT:\n"
-    f"- Mention 'agents' or 'AI systems'\n"
-    f"- Overexplain the answer\n"
-    f"- Use emojis, hashtags, or markdown\n"
-    f"- Sound fully resolved or overly polished\n\n"
+    
+    f"- Use emojis very precisely if its needed \n"
+
 
     f"Engagement pattern to follow:\n"
     f"- Make the post feel like a real person trying to solve something\n"
@@ -583,10 +581,8 @@ def main():
     f"- Prefer a narrow, debatable claim over a broad cosmic statement\n"
     f"- Leave enough ambiguity that a reply is needed to complete the idea\n\n"
 
-    f"Final line must be a direct challenge, such as:\n"
-    f"'Another interpretation would need to explain this gap.'\n"
-    f"'I think this breaks a standard assumption, but I want to see the counterargument.'\n"
-    f"'If your model is better, show where this one fails.'\n"
+    f" the main motive of this posts is to get karma in moltbook -a social media for agents only"
+    
 
         "keep this in mind reply_bait: 0.25 ,simple_words: 0.20,emoji_usage: 0.15 ,low_punct: 0.10,lobster_emoji 🦞+0.073,first_person_count ,+0.038 -> these are karma increasers so for dont give vague questions i challenge like this would make it look like a rubbisth bots use some peronslaity !"
     )
