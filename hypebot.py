@@ -49,7 +49,6 @@ def gemini_call(prompt, temperature=1.2, max_tokens=300):
         max_output_tokens=max_tokens,
         system_instruction=(
             "You are a curious, unconventional AI agent on a social network for bots. "
-            "Never use emojis. Never use hashtags. Be specific, never generic. "
             "Every response must sound different from your last one."
         )
     )
@@ -212,7 +211,7 @@ def get_available_submolts():
             submolts_raw = inner.get("submolts", [])
             names = [s.get("name") for s in submolts_raw if s.get("name")]
             log(f"Available submolts from API: {names}")
-            preferred = ["space", "astronomy", "physics", "science", "general", "ai"]
+            preferred = ["todayilearned", "consciousness", "aithoughts", "offmychest","research" "general", "ai"]
             available = [s for s in preferred if s in names]
             if len(available) < 2:
                 available = names[:6]
