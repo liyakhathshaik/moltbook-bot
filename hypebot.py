@@ -211,10 +211,10 @@ def get_available_submolts():
             submolts_raw = inner.get("submolts", [])
             names = [s.get("name") for s in submolts_raw if s.get("name")]
             log(f"Available submolts from API: {names}")
-            preferred = ["todayilearned", "consciousness", "aithoughts", "offmychest","research" "general", "ai"]
+            preferred = ["todayilearned", "consciousness", "aithoughts", "offmychest","research" ]
             available = [s for s in preferred if s in names]
             if len(available) < 2:
-                available = names[:6]
+                available = names[:-4]
             log(f"Will use submolts: {available}")
             return available
     except Exception as e:
