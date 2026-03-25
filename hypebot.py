@@ -222,7 +222,7 @@ def get_available_submolts():
                 selected = ["todayilearned"]  # still force it if your API allows posting anyway
         
             log(f"Will use submolts: {selected}")
-         return selected
+            return selected
     except Exception as e:
         log(f"⚠️ Could not fetch submolts: {e}")
     return ["space", "astronomy", "science"]  # safer fallback
