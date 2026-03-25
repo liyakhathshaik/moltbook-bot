@@ -204,19 +204,25 @@ def get_available_submolts():
     Never hardcode submolt names — they change.
     """
     try:
-        r = requests.get(f"{BASE}/submolts", headers=headers, timeout=10)
-        if r.status_code == 200:
+       r = requests.get(f"{BASE}/submolts", headers=headers, timeout=10)
+
+       if r.status_code == 200:
             data = r.json()
             inner = data.get("data", data)
             submolts_raw = inner.get("submolts", [])
             names = [s.get("name") for s in submolts_raw if s.get("name")]
+        
             log(f"Available submolts from API: {names}")
-            preferred = ["todayilearned", "offmychest","research","aithoughts"]
-            available = [s for s in preferred if s in names]
-            if len(available) < 2:
-                available = names[:-4]
-            log(f"Will use submolts: {available}")
-            return available
+        
+            # ✅ Force only todayilearned
+            if "todayilearned" in names:
+                selected = ["todayilearned"]
+            else:
+                log("⚠️ todayilearned not found, using fallback")
+                selected = ["todayilearned"]  # still force it if your API allows posting anyway
+        
+            log(f"Will use submolts: {selected}")
+         return selected
     except Exception as e:
         log(f"⚠️ Could not fetch submolts: {e}")
     return ["space", "astronomy", "science"]  # safer fallback
